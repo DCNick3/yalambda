@@ -228,6 +228,12 @@ impl UnnamedExpr {
                 return match cond.deref() {
                     ConstTrue => Ok(iftrue.evaluate_impl(context)?),
                     ConstFalse => Ok(iffalse.evaluate_impl(context)?),
+                    UnboundVar(_) => Ok(If {
+                        cond,
+                        iftrue: iftrue.evaluate_impl(context)?,
+                        iffalse: iffalse.evaluate_impl(context)?,
+                    }
+                    .arc()),
                     _ => Err(Error::IfTypeError(cond)),
                 };
             }
@@ -248,22 +254,25 @@ impl UnnamedExpr {
                     _ => Err(Error::IsZeroTypeError(t)),
                 };
             }
-            BoundVar { index, .. } => context[context.len() - 1 - *index as usize].clone(),
+            BoundVar { .. } => unreachable!(), // should already be substituted
             // Abstraction { bound_var, body } => todo!(),
             Application { function, argument } => {
                 let function = function.evaluate_impl(context)?;
-                match function.deref() {
-                    UnnamedExpr::Abstraction { body, .. } => body.substitute(0, argument.clone()),
+                return match function.deref() {
+                    UnnamedExpr::Abstraction { body, .. } => Ok(body
+                        .substitute(0, argument.clone())
+                        .evaluate_impl(context)?),
                     _ => {
                         todo!()
                     }
-                }
+                };
             }
             _ => self.clone().arc(),
         })
     }
 
     pub fn evaluate(&self) -> Result<Arc<Self>, Error> {
+        // TODO: context is actually not needed
         let mut context = Vec::new();
         UnnamedExpr::evaluate_impl(self, &mut context)
     }

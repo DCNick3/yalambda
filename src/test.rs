@@ -72,9 +72,14 @@ test_eval!(simp_app4, r"(\x. (\y. succ x) y)", r"\z. succ y");
 test_eval!(simp_if1, r"if true then false else true", r"false");
 test_eval!(simp_if2, r"if true then 0 else succ 0", r"0");
 test_err!(
-    simp_if_err,
+    simp_if_err1,
     r"if 0 then true else false",
-    Error::IfTypeError(parse("0"))
+    Error::IfTypeError(parse(r"0"))
+);
+test_err!(
+    simp_if_err2,
+    r"if \x.x then true else false",
+    Error::IfTypeError(parse(r"\x.x"))
 );
 
 test_eval!(simp_iz1, r"iszero 0", r"true");
@@ -85,5 +90,17 @@ test_eval!(simp_pred1, r"pred succ 0", "0");
 test_eval!(simp_pred2, r"pred 0", "0");
 test_eval!(simp_pred3, r"pred pred succ 0", "0");
 test_eval!(simp_pred4, r"pred succ succ 0", "succ 0");
+
+test_eval!(
+    irreducible1,
+    r"if dicks then 0 else 0",
+    r"if dicks then 0 else 0"
+);
+
+test_eval!(
+    simp_cmplx1,
+    r"if iszero (\x. if x then succ 0 else 0 false) then true else false",
+    r"true"
+);
 
 // test_eval!(clash_app1, r"", r"\y. ");
