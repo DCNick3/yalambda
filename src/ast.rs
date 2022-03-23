@@ -1,4 +1,3 @@
-use crate::Expr::{IsZero, Pred, Succ};
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -110,10 +109,12 @@ pub enum UnnamedExpr {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Error {
     Dicks,
     IfTypeError(Arc<UnnamedExpr>),
+    IsZeroTypeError(Arc<UnnamedExpr>),
+    PredTypeError(Arc<UnnamedExpr>),
 }
 
 impl UnnamedExpr {
@@ -203,7 +204,7 @@ impl UnnamedExpr {
             }
             Abstraction { bound_var, body } => Abstraction {
                 bound_var: bound_var.clone(),
-                body: body.substitute(index + 1, body.shift(0)),
+                body: body.substitute(index + 1, value.shift(0)),
             }
             .arc(),
             Application { function, argument } => Application {
@@ -231,8 +232,22 @@ impl UnnamedExpr {
                 };
             }
             Succ(t) => Succ(t.evaluate_impl(context)?).arc(),
-            Pred(t) => Pred(t.evaluate_impl(context)?).arc(),
-            IsZero(t) => IsZero(t.evaluate_impl(context)?).arc(),
+            Pred(t) => {
+                let t = t.evaluate_impl(context)?;
+                return match t.deref() {
+                    ConstZero => Ok(ConstZero.arc()),
+                    Succ(t) => Ok(t.clone()),
+                    _ => Err(Error::PredTypeError(t)),
+                };
+            }
+            IsZero(t) => {
+                let t = t.evaluate_impl(context)?;
+                return match t.deref() {
+                    ConstZero => Ok(ConstTrue.arc()),
+                    Succ(_) => Ok(ConstFalse.arc()),
+                    _ => Err(Error::IsZeroTypeError(t)),
+                };
+            }
             BoundVar { index, .. } => context[context.len() - 1 - *index as usize].clone(),
             // Abstraction { bound_var, body } => todo!(),
             Application { function, argument } => {
@@ -298,5 +313,11 @@ impl UnnamedExpr {
             }
             _ => false,
         }
+    }
+}
+
+impl PartialEq for UnnamedExpr {
+    fn eq(&self, other: &Self) -> bool {
+        UnnamedExpr::equivalent(self, other)
     }
 }

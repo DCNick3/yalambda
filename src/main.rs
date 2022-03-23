@@ -27,60 +27,20 @@
 
 mod ast;
 
-#[macro_use]
-extern crate lalrpop_util;
+#[cfg(test)]
+mod test;
 
-use crate::ast::{Expr, UnnamedExpr};
+use crate::ast::Expr;
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use codespan_reporting::files::SimpleFiles;
 use codespan_reporting::term;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 use lalrpop_util::lexer::Token;
-use lalrpop_util::state_machine::ParseResult;
-use lalrpop_util::ParseError;
+use lalrpop_util::{lalrpop_mod, ParseError};
 use std::io::{stdin, Read};
 use std::sync::Arc;
 
-lalrpop_mod!(pub calculator1);
-
-fn assert_eval(source: &str, expected_result: &str) {
-    let ast: Arc<Expr> = calculator1::ExprParser::new().parse(source).unwrap();
-
-    println!("Ast: {:#?}", ast);
-
-    let unnamed_ast = ast.to_unnamed();
-
-    println!("Unnamed Ast: {:#?}", unnamed_ast);
-
-    let result = unnamed_ast.evaluate().unwrap();
-
-    println!("Evaluated: {:#?}", result);
-
-    let expected_result: Arc<Expr> = calculator1::ExprParser::new()
-        .parse(expected_result)
-        .unwrap();
-    let expected_result = expected_result.to_unnamed();
-
-    println!("Expected result: {:#?}", expected_result);
-
-    assert!(UnnamedExpr::equivalent(&result, &expected_result));
-}
-
-macro_rules! test_eval {
-    ($test_name:ident, $source:literal, $result:literal) => {
-        #[test]
-        fn $test_name() {
-            assert_eval($source, $result);
-        }
-    };
-}
-
-test_eval!(simp_app1, r"(\x.x 0)", r"0");
-test_eval!(simp_app2, r"(\x.x succ 0)", r"succ 0");
-test_eval!(simp_if1, r"if true then false else true", r"false");
-test_eval!(simp_if2, r"if true then 0 else succ 0", r"0");
-
-test_eval!(clash_app1, r"(\z.\y. (\x. \y.(x y))) y", r"succ 0");
+lalrpop_mod!(pub yalamb);
 
 fn show_diagnostic(source: &str, error: ParseError<usize, Token<'_>, &'static str>) {
     let mut files = SimpleFiles::new();
@@ -129,9 +89,10 @@ fn main() {
     let mut input = String::new();
     stdin().read_to_string(&mut input).unwrap();
 
-    let ast: Result<Arc<Expr>, ParseError<_, _, _>> = calculator1::ExprParser::new().parse(&input);
+    let ast: Result<Arc<Expr>, ParseError<_, _, _>> =
+        crate::yalamb::ExprParser::new().parse(&input);
 
-    let ast = match ast {
+    match ast {
         Ok(ast) => {
             println!("Ast: {:#?}", ast);
 
