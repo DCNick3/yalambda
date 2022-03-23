@@ -1,0 +1,32 @@
+use crate::ast::Expr;
+use std::sync::Arc;
+
+grammar;
+
+pub Expr: Arc<Expr> = {
+    "true" => Arc::new(Expr::ConstTrue),
+    "false" => Arc::new(Expr::ConstFalse),
+    "if" <c:Expr> "then" <t:Expr> "else" <f:Expr> => Arc::new(Expr::If {
+        cond: c,
+        iftrue: t,
+        iffalse: f,
+    }),
+
+    "0" => Arc::new(Expr::ConstZero),
+    "succ" <t:Expr> => Arc::new(Expr::Succ(t)),
+    "pred" <t:Expr> => Arc::new(Expr::Pred(t)),
+    "iszero" <t:Expr> => Arc::new(Expr::IsZero(t)),
+    <t:Ident> => Arc::new(Expr::Var(t)),
+    "\\" <v:Ident> "." <b:Expr> => Arc::new(Expr::Abstraction {
+        bound_var: v,
+        body: b,
+    }),
+    "(" <f:Expr> <a:Expr> ")" => Arc::new(Expr::Application {
+        function: f,
+        argument: a,
+    }),
+
+    "(" <t:Expr> ")" => t,
+};
+
+Ident: Arc<str> = <s:r"[a-zA-Z][a-zA-Z0-9]*"> => s.into();
