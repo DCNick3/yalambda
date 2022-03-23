@@ -113,6 +113,7 @@ pub enum UnnamedExpr {
 #[derive(Debug)]
 pub enum Error {
     Dicks,
+    IfTypeError(Arc<UnnamedExpr>),
 }
 
 impl UnnamedExpr {
@@ -217,7 +218,18 @@ impl UnnamedExpr {
         use UnnamedExpr::*;
 
         Ok(match self {
-            // If { cond, iftrue, iffalse } => {}
+            If {
+                cond,
+                iftrue,
+                iffalse,
+            } => {
+                let cond = cond.evaluate_impl(context)?;
+                return match cond.deref() {
+                    ConstTrue => Ok(iftrue.evaluate_impl(context)?),
+                    ConstFalse => Ok(iffalse.evaluate_impl(context)?),
+                    _ => Err(Error::IfTypeError(cond)),
+                };
+            }
             Succ(t) => Succ(t.evaluate_impl(context)?).arc(),
             Pred(t) => Pred(t.evaluate_impl(context)?).arc(),
             IsZero(t) => IsZero(t.evaluate_impl(context)?).arc(),
