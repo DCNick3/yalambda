@@ -103,4 +103,6 @@ test_eval!(
     r"true"
 );
 
+test_eval!(weird, r"((\x.x x) \x.x)", r"x");
+
 // test_eval!(clash_app1, r"", r"\y. ");

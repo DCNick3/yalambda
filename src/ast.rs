@@ -259,9 +259,10 @@ impl UnnamedExpr {
             Application { function, argument } => {
                 let function = function.evaluate_impl(context)?;
                 return match function.deref() {
-                    UnnamedExpr::Abstraction { body, .. } => Ok(body
+                    Abstraction { body, .. } => Ok(body
                         .substitute(0, argument.clone())
                         .evaluate_impl(context)?),
+                    UnboundVar(name) => Ok(UnboundVar(name.clone()).arc()), // it's ok to call an external value
                     _ => {
                         todo!()
                     }
