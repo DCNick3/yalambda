@@ -96,6 +96,8 @@ fn main() {
         Ok(ast) => {
             println!("Ast: {:#?}", ast);
 
+            println!("Type: {:#?}", ast.type_of().unwrap());
+
             let unnamed_ast = ast.to_unnamed();
 
             println!("Unnamed Ast: {:#?}", unnamed_ast);

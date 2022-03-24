@@ -1,7 +1,18 @@
-use crate::ast::Expr;
+use crate::ast::{Expr, Type};
 use std::sync::Arc;
 
 grammar;
+
+pub Type1: Arc<Type> = {
+    "nat" => Arc::new(Type::Nat),
+    "bool" => Arc::new(Type::Boolean),
+    "(" <t:Type> ")" => t,
+};
+
+pub Type: Arc<Type> = {
+    Type1,
+    <a:Type1> "->" <r:Type> => Arc::new(Type::Function(a, r)),
+};
 
 pub Expr: Arc<Expr> = {
     "true" => Arc::new(Expr::ConstTrue),
@@ -17,8 +28,9 @@ pub Expr: Arc<Expr> = {
     "pred" <t:Expr> => Arc::new(Expr::Pred(t)),
     "iszero" <t:Expr> => Arc::new(Expr::IsZero(t)),
     <t:Ident> => Arc::new(Expr::Var(t)),
-    "\\" <v:Ident> "." <b:Expr> => Arc::new(Expr::Abstraction {
+    "\\" <v:Ident> ":" <t:Type> "." <b:Expr> => Arc::new(Expr::Abstraction {
         bound_var: v,
+        type_: t,
         body: b,
     }),
     "(" <f:Expr> <a:Expr> ")" => Arc::new(Expr::Application {

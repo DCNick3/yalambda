@@ -1,6 +1,61 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
+#[derive(Debug, PartialEq)]
+pub enum RuntimeError {
+    IfTypeError(Arc<UnnamedExpr>),
+    IsZeroTypeError(Arc<UnnamedExpr>),
+    PredTypeError(Arc<UnnamedExpr>),
+}
+
+#[derive(Debug)]
+pub struct TypeMismatch {
+    pub expression: Arc<Expr>,
+    pub actual_type: Arc<Type>,
+    pub expected_type: Arc<Type>,
+}
+
+#[derive(Debug)]
+pub enum TypingError {
+    IfCond(TypeMismatch),
+    IfBody(Arc<Expr>, Arc<Type>, Arc<Expr>, Arc<Type>),
+    SuccOf(TypeMismatch),
+    PredOf(TypeMismatch),
+    IsZeroOf(TypeMismatch),
+    NoVar(Arc<str>),
+    CallOf(Arc<Expr>, Arc<Type>),
+    CallArg(TypeMismatch),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Type {
+    Nat,
+    Boolean,
+    Function(Arc<Type>, Arc<Type>),
+}
+
+impl Type {
+    pub fn arc(self) -> Arc<Self> {
+        Arc::new(self)
+    }
+
+    pub fn expect(
+        self: &Arc<Self>,
+        expr: &Arc<Expr>,
+        another: &Arc<Type>,
+    ) -> Result<(), TypeMismatch> {
+        if self == another {
+            Ok(())
+        } else {
+            Err(TypeMismatch {
+                expression: expr.clone(),
+                actual_type: self.clone(),
+                expected_type: another.clone(),
+            })
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Expr {
     ConstTrue,
@@ -18,6 +73,7 @@ pub enum Expr {
     Var(Arc<str>),
     Abstraction {
         bound_var: Arc<str>,
+        type_: Arc<Type>,
         body: Arc<Expr>,
     },
     Application {
@@ -28,6 +84,95 @@ pub enum Expr {
 
 impl Expr {
     // pub fn transform<F, R>(self, trans: F) -> R {}
+
+    pub fn type_of_ctx(
+        &self,
+        context: &mut Vec<(Arc<str>, Arc<Type>)>,
+    ) -> Result<Arc<Type>, TypingError> {
+        use Expr::*;
+        match self {
+            ConstTrue => Ok(Type::Boolean.arc()),
+            ConstFalse => Ok(Type::Boolean.arc()),
+            If {
+                cond,
+                iftrue,
+                iffalse,
+            } => {
+                let cond_ty = cond.type_of_ctx(context)?;
+                cond_ty
+                    .expect(cond, &Type::Boolean.arc())
+                    .map_err(TypingError::IfCond)?;
+                let iftrue_ty = iftrue.type_of_ctx(context)?;
+                let iffalse_ty = iffalse.type_of_ctx(context)?;
+                iftrue_ty.expect(iftrue, &iffalse_ty).map_err(|_| {
+                    TypingError::IfBody(
+                        iftrue.clone(),
+                        iftrue_ty.clone(),
+                        iffalse.clone(),
+                        iffalse_ty.clone(),
+                    )
+                })?;
+                Ok(iftrue_ty)
+            }
+            ConstZero => Ok(Type::Nat.arc()),
+            Succ(t) => {
+                let ty = t.type_of_ctx(context)?;
+                ty.expect(t, &Type::Nat.arc())
+                    .map_err(TypingError::SuccOf)?;
+                Ok(Type::Nat.arc())
+            }
+            Pred(t) => {
+                let ty = t.type_of_ctx(context)?;
+                ty.expect(t, &Type::Nat.arc())
+                    .map_err(TypingError::PredOf)?;
+                Ok(Type::Nat.arc())
+            }
+            IsZero(t) => {
+                let ty = t.type_of_ctx(context)?;
+                ty.expect(t, &Type::Nat.arc())
+                    .map_err(TypingError::IsZeroOf)?;
+                Ok(Type::Boolean.arc())
+            }
+            Var(name) => {
+                let ty = context
+                    .iter()
+                    .rev()
+                    .find(|(nm, _)| nm == name)
+                    .map(|(_, t)| t)
+                    .cloned();
+                ty.ok_or_else(|| TypingError::NoVar(name.clone()))
+            }
+            Abstraction {
+                type_,
+                bound_var,
+                body,
+            } => {
+                context.push((bound_var.clone(), type_.clone()));
+                let res = body.type_of_ctx(context)?;
+                context.pop();
+
+                Ok(Type::Function(type_.clone(), res.clone()).arc())
+            }
+            Application { function, argument } => {
+                let fun_ty = function.type_of_ctx(context)?;
+                match fun_ty.deref() {
+                    Type::Function(fun_arg_ty, ty) => {
+                        let arg_ty = argument.type_of_ctx(context)?;
+                        arg_ty
+                            .expect(argument, &fun_arg_ty)
+                            .map_err(TypingError::CallArg)?;
+                        Ok(ty.clone())
+                    }
+                    _ => Err(TypingError::CallOf(function.clone(), fun_ty.clone())),
+                }
+            }
+        }
+    }
+
+    pub fn type_of(&self) -> Result<Arc<Type>, TypingError> {
+        let mut context = Vec::new();
+        self.type_of_ctx(&mut context)
+    }
 
     fn to_unnamed_impl(&self, context: &mut Vec<Arc<str>>) -> Arc<UnnamedExpr> {
         match self {
@@ -57,7 +202,9 @@ impl Expr {
                 }
                 .arc(),
             },
-            Expr::Abstraction { bound_var, body } => {
+            Expr::Abstraction {
+                bound_var, body, ..
+            } => {
                 context.push(bound_var.clone());
                 let r = UnnamedExpr::Abstraction {
                     bound_var: bound_var.clone(),
@@ -107,14 +254,6 @@ pub enum UnnamedExpr {
         function: Arc<UnnamedExpr>,
         argument: Arc<UnnamedExpr>,
     },
-}
-
-#[derive(Debug, PartialEq)]
-pub enum Error {
-    Dicks,
-    IfTypeError(Arc<UnnamedExpr>),
-    IsZeroTypeError(Arc<UnnamedExpr>),
-    PredTypeError(Arc<UnnamedExpr>),
 }
 
 impl UnnamedExpr {
@@ -215,7 +354,10 @@ impl UnnamedExpr {
         }
     }
 
-    fn evaluate_impl(&self, context: &mut Vec<Arc<UnnamedExpr>>) -> Result<Arc<Self>, Error> {
+    fn evaluate_impl(
+        &self,
+        context: &mut Vec<Arc<UnnamedExpr>>,
+    ) -> Result<Arc<Self>, RuntimeError> {
         use UnnamedExpr::*;
 
         Ok(match self {
@@ -234,7 +376,7 @@ impl UnnamedExpr {
                         iffalse: iffalse.evaluate_impl(context)?,
                     }
                     .arc()),
-                    _ => Err(Error::IfTypeError(cond)),
+                    _ => Err(RuntimeError::IfTypeError(cond)),
                 };
             }
             Succ(t) => Succ(t.evaluate_impl(context)?).arc(),
@@ -243,7 +385,7 @@ impl UnnamedExpr {
                 return match t.deref() {
                     ConstZero => Ok(ConstZero.arc()),
                     Succ(t) => Ok(t.clone()),
-                    _ => Err(Error::PredTypeError(t)),
+                    _ => Err(RuntimeError::PredTypeError(t)),
                 };
             }
             IsZero(t) => {
@@ -251,7 +393,7 @@ impl UnnamedExpr {
                 return match t.deref() {
                     ConstZero => Ok(ConstTrue.arc()),
                     Succ(_) => Ok(ConstFalse.arc()),
-                    _ => Err(Error::IsZeroTypeError(t)),
+                    _ => Err(RuntimeError::IsZeroTypeError(t)),
                 };
             }
             BoundVar { .. } => unreachable!(), // should already be substituted
@@ -272,7 +414,7 @@ impl UnnamedExpr {
         })
     }
 
-    pub fn evaluate(&self) -> Result<Arc<Self>, Error> {
+    pub fn evaluate(&self) -> Result<Arc<Self>, RuntimeError> {
         // TODO: context is actually not needed
         let mut context = Vec::new();
         UnnamedExpr::evaluate_impl(self, &mut context)
