@@ -67,18 +67,18 @@ macro_rules! test_eval {
 //     };
 // }
 
-test_eval!(simp_app1, r"(\x:nat.x 0)", r"0");
-test_eval!(simp_app2, r"(\x:nat.x succ 0)", r"succ 0");
+test_eval!(simp_app1, r"(\x:Nat.x 0)", r"0");
+test_eval!(simp_app2, r"(\x:Nat.x succ 0)", r"succ 0");
 test_eval!(
     simp_app3,
-    r"(\x:nat. (\y:nat. succ x) 0)",
-    r"\y:nat. succ 0"
+    r"(\x:Nat. (\y:Nat. succ x) 0)",
+    r"\y:Nat. succ 0"
 );
 // can't typecheck because of the unbound y
 // test_eval!(
 //     simp_app4,
-//     r"(\x:nat. (\y:nat. succ x) y)",
-//     r"\z:nat. succ y"
+//     r"(\x:Nat. (\y:Nat. succ x) y)",
+//     r"\z:Nat. succ y"
 // );
 
 test_eval!(simp_if1, r"if true then false else true", r"false");
@@ -107,20 +107,59 @@ test_eval!(simp_pred4, r"pred succ succ 0", "succ 0");
 
 test_eval!(
     irreducible1,
-    r"\x:bool.if x then 0 else 0",
-    r"\x:bool.if x then 0 else 0"
+    r"\x:Bool.if x then 0 else 0",
+    r"\x:Bool.if x then 0 else 0"
 );
 
 test_eval!(
     simp_cmplx1,
-    r"if iszero (\x:bool. if x then succ 0 else 0 false) then true else false",
+    r"if iszero (\x:Bool. if x then succ 0 else 0 false) then true else false",
     r"true"
 );
 
 test_eval!(
     weird,
-    r"((\x:(nat->nat)->(nat->nat).x \x:nat->nat.x) \x:nat.x)",
-    r"\x:nat.x"
+    r"((\x:(Nat->Nat)->(Nat->Nat).x \x:Nat->Nat.x) \x:Nat.x)",
+    r"\x:Nat.x"
 );
 
 // test_eval!(clash_app1, r"", r"\y. ");
+
+test_eval!(simp_let, r"let x = 1 in x", r"1");
+test_eval!(mult_let, r"let x = 1, y = 2 in {x:x, y:y}", r"{x:1,y:2}");
+test_eval!(
+    rec_let,
+    r"let {x, y:y} = {x:1, y:2} in {x:y, y:x}",
+    r"{y:1,x:2}"
+);
+
+test_eval!(
+    let_nested,
+    r"
+let a = 1 in
+let b = 2 in
+    {a, b}
+",
+    r"{a:1,b:2}"
+);
+
+test_eval!(
+    let_escape,
+    r"let x = \t:Nat.1 in let y = \t:Nat.(x t) in (y 0)",
+    r"1"
+);
+
+test_eval!(
+    some_fun,
+    r"
+let
+    pair   = \x:Nat. \y:Nat. {_1:x, _2:y},
+    first  = \p:{_1:Nat,_2:Nat}. let {_1, _2} = p in _1,
+    second = \p:{_1:Nat,_2:Nat}. let {_1:x, _2:y} = p in y,
+in let
+    flip   = \p:{_1:Nat,_2:Nat}. ((pair (second p)) (first p)),
+in
+    (flip ((pair 1) 2))
+",
+    r"{_1:2, _2:1}"
+);

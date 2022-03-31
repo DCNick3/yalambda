@@ -1,33 +1,55 @@
-use crate::ast::{Expr, Type};
+use crate::ast::{Expr, Type, Pattern};
 use std::sync::Arc;
+use std::str::FromStr;
 
 grammar;
 
+pub FieldType: (Arc<str>, Arc<Type>) = <name:Ident> ":" <ty:Type> => (name, ty);
+
 pub Type1: Arc<Type> = {
-    "nat" => Arc::new(Type::Nat),
-    "bool" => Arc::new(Type::Boolean),
+    "Nat" => Type::Nat.arc(),
+    "Bool" => Type::Boolean.arc(),
+    "List" "[" <t:Type> "]" => Type::List(t).arc(),
+    "Option" "[" <t:Type> "]" => Type::Option(t).arc(),
     "(" <t:Type> ")" => t,
+    "{" <fields:Comma<FieldType>> "}" => Type::Record(fields.into_iter().collect()).arc(),
 };
 
 pub Type: Arc<Type> = {
     Type1,
-    <a:Type1> "->" <r:Type> => Arc::new(Type::Function(a, r)),
+    <a:Type1> "->" <r:Type> => Type::Function(a, r).arc(),
 };
 
+pub Field: (Arc<str>, Arc<Expr>) = {
+    <id:Ident> ":" <e:Expr> => (id, e),
+    <id:Ident> => (id.clone(), Expr::Var(id).arc()),
+};
+
+pub Pattern: Arc<Pattern> = {
+    "{" <fields:Comma<FieldPattern>> "}" => Pattern::Record(fields.into_iter().collect()).arc(),
+    <name:Ident> => Pattern::Var(name).arc(),
+};
+pub FieldPattern: (Arc<str>, Arc<Pattern>) = {
+    <name:Ident> ":" <pat:Pattern> => (name, pat),
+    <name:Ident> => (name.clone(), Pattern::Var(name).arc()),
+};
+pub LetClause: (Arc<Pattern>, Arc<Expr>) = <pat:Pattern> "=" <val:Expr> => (pat, val);
+
 pub Expr: Arc<Expr> = {
-    "true" => Arc::new(Expr::ConstTrue),
-    "false" => Arc::new(Expr::ConstFalse),
+    "true" => Expr::ConstTrue.arc(),
+    "false" => Expr::ConstFalse.arc(),
     "if" <c:Expr> "then" <t:Expr> "else" <f:Expr> => Arc::new(Expr::If {
         cond: c,
         iftrue: t,
         iffalse: f,
     }),
 
-    "0" => Arc::new(Expr::ConstZero),
-    "succ" <t:Expr> => Arc::new(Expr::Succ(t)),
-    "pred" <t:Expr> => Arc::new(Expr::Pred(t)),
-    "iszero" <t:Expr> => Arc::new(Expr::IsZero(t)),
-    <t:Ident> => Arc::new(Expr::Var(t)),
+    "0" => Expr::ConstZero.arc(),
+    <v:Num> => Expr::number(v),
+    "succ" <t:Expr> => Expr::Succ(t).arc(),
+    "pred" <t:Expr> => Expr::Pred(t).arc(),
+    "iszero" <t:Expr> => Expr::IsZero(t).arc(),
+    <t:Ident> => Expr::Var(t).arc(),
     "\\" <v:Ident> ":" <t:Type> "." <b:Expr> => Arc::new(Expr::Abstraction {
         bound_var: v,
         type_: t,
@@ -39,6 +61,30 @@ pub Expr: Arc<Expr> = {
     }),
 
     "(" <t:Expr> ")" => t,
+
+    "{" <fields:Comma<Field>> "}" => Expr::Record(fields.into_iter().collect()).arc(),
+    "let" <clauses:Comma<LetClause>> "in" <substituted_expr:Expr> => Arc::new(Expr::Let{
+        clauses,
+        substituted_expr,
+    }),
+    "Nil" "[" <t:Type> "]" => Expr::Nil { ty: t }.arc(),
+    "Cons" <left:Expr> <right:Expr> => Expr::Cons { left, right }.arc(),
+    "<" <nm:Ident> <val:Expr> ">" "as" <ty:Type> => Arc::new(Expr::Variant {
+        name: nm,
+        body: val,
+        ty
+    }),
 };
 
-Ident: Arc<str> = <s:r"[a-zA-Z][a-zA-Z0-9]*"> => s.into();
+Comma<T>: Vec<T> = { // (1)
+    <mut v:(<T> ",")*> <e:T?> => match e {
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+};
+
+Ident: Arc<str> = <s:r"[a-zA-Z_][a-zA-Z0-9_]*"> => s.into();
+Num: u32 = <s:r"[0-9]+"> => u32::from_str(s).unwrap();

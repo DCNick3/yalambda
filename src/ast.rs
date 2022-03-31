@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::iter::FromIterator;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -6,6 +8,8 @@ pub enum RuntimeError {
     IfTypeError(Arc<UnnamedExpr>),
     IsZeroTypeError(Arc<UnnamedExpr>),
     PredTypeError(Arc<UnnamedExpr>),
+    DestructTypeError(Arc<UnnamedExpr>),
+    UnknownVariant(Arc<str>, Arc<UnnamedExpr>),
 }
 
 #[derive(Debug)]
@@ -25,6 +29,12 @@ pub enum TypingError {
     NoVar(Arc<str>),
     CallOf(Arc<Expr>, Arc<Type>),
     CallArg(TypeMismatch),
+    UnknownVariant(Arc<str>, Arc<Type>),
+    AsNotVariant(Arc<Type>),
+    Variant(TypeMismatch),
+    ConsRight(Arc<Expr>, Arc<Type>),
+    ConsLeft(TypeMismatch),
+    DestructNotRecord(/*Arc<Expr>, impl difficulties*/ Arc<Type>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +42,10 @@ pub enum Type {
     Nat,
     Boolean,
     Function(Arc<Type>, Arc<Type>),
+    Record(BTreeMap<Arc<str>, Arc<Type>>),
+    List(Arc<Type>),
+    Option(Arc<Type>),
+    Variant(BTreeMap<Arc<str>, Arc<Type>>),
 }
 
 impl Type {
@@ -55,6 +69,10 @@ impl Type {
         }
     }
 }
+
+// macro_rules! expect_matches {
+//     ()
+// }
 
 #[derive(Debug, Clone)]
 pub enum Expr {
@@ -80,15 +98,165 @@ pub enum Expr {
         function: Arc<Expr>,
         argument: Arc<Expr>,
     },
+    Record(BTreeMap<Arc<str>, Arc<Expr>>),
+    Let {
+        clauses: Vec<(Arc<Pattern>, Arc<Expr>)>,
+        substituted_expr: Arc<Expr>,
+    },
+    Variant {
+        name: Arc<str>,
+        body: Arc<Expr>,
+        ty: Arc<Type>,
+    },
+    Nil {
+        ty: Arc<Type>,
+    },
+    Cons {
+        left: Arc<Expr>,
+        right: Arc<Expr>,
+    },
+}
+
+pub struct Context<T: Clone>(Vec<T>);
+
+impl<T: Clone> Context<T> {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn push(&mut self, value: T) {
+        self.0.push(value)
+    }
+
+    pub fn get(&self, index: usize) -> T {
+        if index >= self.0.len() {
+            panic!("Context index out of bounds")
+        }
+        self.0[self.0.len() - 1 - index].clone()
+    }
+
+    fn save_frame<R, F: FnOnce(&mut Self) -> R>(&mut self, f: F) -> R {
+        let val = self.0.len();
+
+        let r = f(self);
+
+        self.0.truncate(val);
+        r
+    }
+
+    fn iter(&self) -> std::slice::Iter<T> {
+        self.0.iter()
+    }
+}
+
+impl<T: Clone> Extend<T> for Context<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        self.0.extend(iter)
+    }
+}
+
+impl<T: Clone> IntoIterator for Context<T> {
+    type Item = T;
+    type IntoIter = <Vec<T> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<T: Clone> FromIterator<T> for Context<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self(Vec::from_iter(iter))
+    }
+}
+
+impl<T: Clone> From<Vec<T>> for Context<T> {
+    fn from(v: Vec<T>) -> Self {
+        Self(v)
+    }
+}
+
+type TypeContext = Context<(Arc<str>, Arc<Type>)>;
+type NamesContext = Context<Arc<str>>;
+
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    Var(Arc<str>),
+    Record(Vec<(Arc<str>, Arc<Pattern>)>),
+}
+
+impl Pattern {
+    pub fn arc(self) -> Arc<Self> {
+        Arc::new(self)
+    }
+
+    pub fn to_unnamed(&self) -> Arc<UnnamedPattern> {
+        match self {
+            Pattern::Var(name) => UnnamedPattern::Var(name.clone()).arc(),
+            Pattern::Record(items) => UnnamedPattern::Record(
+                items
+                    .iter()
+                    .map(|(nm, pat)| (nm.clone(), pat.to_unnamed()))
+                    .collect(),
+            )
+            .arc(),
+        }
+    }
+
+    pub fn collect_var_names(self: &Arc<Pattern>) -> Vec<Arc<str>> {
+        match self.deref() {
+            Pattern::Var(v) => vec![v.clone()],
+            Pattern::Record(items) => {
+                let mut r = Vec::new();
+
+                for (_, pattern) in items {
+                    r.extend(pattern.collect_var_names());
+                }
+
+                r
+            }
+        }
+    }
+
+    pub fn collect_var_types(
+        self: &Arc<Pattern>,
+        ty: &Arc<Type>,
+    ) -> Result<TypeContext, TypingError> {
+        match self.deref() {
+            Pattern::Var(v) => Ok(vec![(v.clone(), ty.clone())].into()),
+            Pattern::Record(items) => match ty.deref() {
+                Type::Record(items_ty) => {
+                    let mut r = TypeContext::new();
+
+                    for (field, pattern) in items {
+                        let item_ty = items_ty.get(field).ok_or_else(|| {
+                            TypingError::UnknownVariant(field.clone(), ty.clone())
+                        })?;
+                        r.extend(pattern.collect_var_types(item_ty)?);
+                    }
+
+                    Ok(r)
+                }
+                _ => Err(TypingError::DestructNotRecord(ty.clone())),
+            },
+        }
+    }
 }
 
 impl Expr {
-    // pub fn transform<F, R>(self, trans: F) -> R {}
+    pub fn arc(self) -> Arc<Self> {
+        Arc::new(self)
+    }
 
-    pub fn type_of_ctx(
-        &self,
-        context: &mut Vec<(Arc<str>, Arc<Type>)>,
-    ) -> Result<Arc<Type>, TypingError> {
+    pub fn number(val: u32) -> Arc<Expr> {
+        if val == 0 {
+            Expr::ConstZero.arc()
+        } else {
+            Expr::Succ(Expr::number(val - 1)).arc()
+        }
+    }
+
+    pub fn type_of_ctx(&self, context: &mut TypeContext) -> Result<Arc<Type>, TypingError> {
         use Expr::*;
         match self {
             ConstTrue => Ok(Type::Boolean.arc()),
@@ -146,13 +314,12 @@ impl Expr {
                 type_,
                 bound_var,
                 body,
-            } => {
+            } => context.save_frame(|context| {
                 context.push((bound_var.clone(), type_.clone()));
                 let res = body.type_of_ctx(context)?;
-                context.pop();
 
                 Ok(Type::Function(type_.clone(), res.clone()).arc())
-            }
+            }),
             Application { function, argument } => {
                 let fun_ty = function.type_of_ctx(context)?;
                 match fun_ty.deref() {
@@ -166,15 +333,71 @@ impl Expr {
                     _ => Err(TypingError::CallOf(function.clone(), fun_ty.clone())),
                 }
             }
+            Record(fields) => {
+                let fields: Result<BTreeMap<_, _>, _> = fields
+                    .iter()
+                    .map(|(nm, val)| -> Result<_, _> {
+                        let ty = val.type_of_ctx(context)?;
+                        Ok((nm.clone(), ty))
+                    })
+                    .collect();
+                let fields = fields?;
+                Ok(Type::Record(fields).arc())
+            }
+            Let {
+                clauses,
+                substituted_expr,
+            } => {
+                let vars = clauses
+                    .iter()
+                    .map(|(pattern, expr)| -> Result<_, _> {
+                        let destr_ty = expr.type_of_ctx(context)?;
+                        Ok(pattern.collect_var_types(&destr_ty)?)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect::<TypeContext>();
+
+                Ok(context.save_frame(|context| {
+                    context.extend(vars);
+                    substituted_expr.type_of_ctx(context)
+                })?)
+            }
+            Variant { body, name, ty } => {
+                let body_ty = body.type_of_ctx(context)?;
+                // TODO: this a common idiom that should probably be a macro based on matches! or some other macromagic
+                match ty.deref() {
+                    Type::Variant(vars) => vars
+                        .get(name)
+                        .ok_or_else(|| TypingError::UnknownVariant(name.clone(), ty.clone()))
+                        .and_then(|v| v.expect(body, &body_ty).map_err(TypingError::Variant)),
+                    _ => Err(TypingError::AsNotVariant(ty.clone())),
+                }?;
+                Ok(ty.clone())
+            }
+            Nil { ty } => Ok(Type::List(ty.clone()).arc()),
+            Cons { left, right } => {
+                let left_ty = left.type_of_ctx(context)?;
+                let right_ty = right.type_of_ctx(context)?;
+                let item_ty = match right_ty.deref() {
+                    Type::List(t) => Ok(t),
+                    _ => Err(TypingError::ConsRight(right.clone(), right_ty.clone())),
+                }?;
+                left_ty
+                    .expect(right, &item_ty)
+                    .map_err(TypingError::ConsLeft)?;
+                Ok(right_ty)
+            }
         }
     }
 
     pub fn type_of(&self) -> Result<Arc<Type>, TypingError> {
-        let mut context = Vec::new();
+        let mut context = TypeContext::new();
         self.type_of_ctx(&mut context)
     }
 
-    fn to_unnamed_impl(&self, context: &mut Vec<Arc<str>>) -> Arc<UnnamedExpr> {
+    fn to_unnamed_impl(&self, context: &mut NamesContext) -> Arc<UnnamedExpr> {
         match self {
             Expr::ConstTrue => UnnamedExpr::ConstTrue.arc(),
             Expr::ConstFalse => UnnamedExpr::ConstFalse.arc(),
@@ -197,33 +420,125 @@ impl Expr {
             Expr::Var(name) => match context.iter().rev().enumerate().find(|(_, s)| s == &name) {
                 None => UnnamedExpr::UnboundVar(name.clone()).arc(),
                 Some((index, _)) => UnnamedExpr::BoundVar {
-                    index: index as u32,
+                    index: index,
                     old_name: name.clone(),
                 }
                 .arc(),
             },
             Expr::Abstraction {
                 bound_var, body, ..
-            } => {
+            } => context.save_frame(|context| {
                 context.push(bound_var.clone());
                 let r = UnnamedExpr::Abstraction {
                     bound_var: bound_var.clone(),
                     body: body.to_unnamed_impl(context),
                 };
-                context.pop().unwrap();
                 r.arc()
-            }
+            }),
             Expr::Application { function, argument } => UnnamedExpr::Application {
                 function: function.to_unnamed_impl(context),
                 argument: argument.to_unnamed_impl(context),
+            }
+            .arc(),
+            Expr::Record(items) => UnnamedExpr::Record(
+                items
+                    .into_iter()
+                    .map(|(k, v)| (k.clone(), v.to_unnamed_impl(context)))
+                    .collect(),
+            )
+            .arc(),
+            Expr::Let {
+                clauses,
+                substituted_expr,
+            } => {
+                let var_names = clauses
+                    .iter()
+                    .flat_map(|(pattern, _)| pattern.collect_var_names())
+                    .collect::<Vec<Arc<str>>>();
+                let subs = context.save_frame(|context| {
+                    context.extend(var_names);
+                    substituted_expr.to_unnamed_impl(context)
+                });
+                UnnamedExpr::Let {
+                    substituted_expr: subs,
+                    clauses: clauses
+                        .iter()
+                        .map(|(pattern, expr)| {
+                            (pattern.to_unnamed(), expr.to_unnamed_impl(context))
+                        })
+                        .collect(),
+                }
+                .arc()
+            }
+            Expr::Variant { name, body, .. } => UnnamedExpr::Variant {
+                name: name.clone(),
+                body: body.to_unnamed_impl(context),
+            }
+            .arc(),
+            Expr::Nil { .. } => UnnamedExpr::Nil.arc(),
+            Expr::Cons { left, right } => UnnamedExpr::Cons {
+                left: left.to_unnamed_impl(context),
+                right: right.to_unnamed_impl(context),
             }
             .arc(),
         }
     }
 
     pub fn to_unnamed(&self) -> Arc<UnnamedExpr> {
-        let mut context = Vec::new();
+        let mut context = NamesContext::new();
         self.to_unnamed_impl(&mut context)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum UnnamedPattern {
+    Var(Arc<str>), // this is an "old" name now, not really meaning anything
+    Record(BTreeMap<Arc<str>, Arc<UnnamedPattern>>),
+}
+
+impl UnnamedPattern {
+    pub fn arc(self) -> Arc<Self> {
+        Arc::new(self)
+    }
+
+    pub fn collect_var_vals(
+        self: &Arc<UnnamedPattern>,
+        val: &Arc<UnnamedExpr>,
+    ) -> Result<Vec<Arc<UnnamedExpr>>, RuntimeError> {
+        match self.deref() {
+            UnnamedPattern::Var(_) => Ok(vec![val.clone()]),
+            UnnamedPattern::Record(items) => match val.deref() {
+                UnnamedExpr::Record(items_ty) => {
+                    let mut r = Vec::new();
+
+                    for (field, pattern) in items {
+                        let item_ty = items_ty.get(field).ok_or_else(|| {
+                            RuntimeError::UnknownVariant(field.clone(), val.clone())
+                        })?;
+                        r.extend(pattern.collect_var_vals(item_ty)?);
+                    }
+
+                    Ok(r)
+                }
+                _ => Err(RuntimeError::DestructTypeError(val.clone())),
+            },
+        }
+    }
+
+    pub fn expandable(&self, val: &Arc<UnnamedExpr>) -> bool {
+        match self {
+            UnnamedPattern::Var(_) => true,
+            UnnamedPattern::Record(_) => val.isval(),
+        }
+    }
+
+    pub fn variable_count(&self) -> usize {
+        match self {
+            UnnamedPattern::Var(_) => 1,
+            UnnamedPattern::Record(items) => {
+                items.iter().map(|(_, pat)| pat.variable_count()).sum()
+            }
+        }
     }
 }
 
@@ -243,7 +558,7 @@ pub enum UnnamedExpr {
     IsZero(Arc<UnnamedExpr>),
     UnboundVar(Arc<str>),
     BoundVar {
-        index: u32,
+        index: usize,
         old_name: Arc<str>,
     },
     Abstraction {
@@ -254,113 +569,330 @@ pub enum UnnamedExpr {
         function: Arc<UnnamedExpr>,
         argument: Arc<UnnamedExpr>,
     },
+    Record(BTreeMap<Arc<str>, Arc<UnnamedExpr>>),
+    Let {
+        clauses: Vec<(Arc<UnnamedPattern>, Arc<UnnamedExpr>)>,
+        substituted_expr: Arc<UnnamedExpr>,
+    },
+    Variant {
+        name: Arc<str>,
+        body: Arc<UnnamedExpr>,
+    },
+    Nil,
+    Cons {
+        left: Arc<UnnamedExpr>,
+        right: Arc<UnnamedExpr>,
+    },
 }
+
+// struct EvaluationContextNode {
+//     pub value: Arc<UnnamedExpr>,
+//     pub next: Option<Arc<EvaluationContextNode>>,
+// }
+
+// struct EvaluationContext(Option<Arc<EvaluationContextNode>>);
+//
+// impl EvaluationContext {
+//     pub fn new() -> Self {
+//         EvaluationContext(None)
+//     }
+//
+//     pub fn cons(self, value: Arc<UnnamedExpr>) -> Self {
+//         EvaluationContext(Some(Arc::new(EvaluationContextNode {
+//             value,
+//             next: self.0,
+//         })))
+//     }
+//
+//     fn get_impl(node: &Option<Arc<EvaluationContextNode>>, index: usize) -> Arc<UnnamedExpr> {
+//         match node {
+//             None => panic!("EvaluationContext index out of bounds"),
+//             Some(node) => {
+//                 if index == 0 {
+//                     node.value.clone()
+//                 } else {
+//                     EvaluationContext::get_impl(&node.next, index - 1)
+//                 }
+//             }
+//         }
+//     }
+//
+//     pub fn get(&self, index: usize) -> Arc<UnnamedExpr> {
+//         EvaluationContext::get_impl(&self.0, index)
+//     }
+// }
+
+type EvaluationContext = Context<Arc<UnnamedExpr>>;
 
 impl UnnamedExpr {
     pub fn arc(self) -> Arc<Self> {
         Arc::new(self)
     }
 
-    fn shift(&self, k: u32) -> Arc<UnnamedExpr> {
+    // fn shift(&self, k: usize, n: usize) -> Arc<UnnamedExpr> {
+    //     use UnnamedExpr::*;
+    //     match self {
+    //         ConstTrue => ConstTrue.arc(),
+    //         ConstFalse => ConstFalse.arc(),
+    //         If {
+    //             cond,
+    //             iftrue,
+    //             iffalse,
+    //         } => If {
+    //             cond: cond.shift(k, n),
+    //             iftrue: iftrue.shift(k, n),
+    //             iffalse: iffalse.shift(k, n),
+    //         }
+    //         .arc(),
+    //         ConstZero => ConstZero.arc(),
+    //         Succ(t) => Succ(t.shift(k, n)).arc(),
+    //         Pred(t) => Pred(t.shift(k, n)).arc(),
+    //         IsZero(t) => IsZero(t.shift(k, n)).arc(),
+    //         UnboundVar(v) => UnboundVar(v.clone()).arc(),
+    //         BoundVar {
+    //             index: bound_index,
+    //             old_name,
+    //         } => BoundVar {
+    //             index: if *bound_index < k {
+    //                 *bound_index
+    //             } else {
+    //                 *bound_index + n
+    //             },
+    //             old_name: old_name.clone(),
+    //         }
+    //         .arc(),
+    //
+    //         Abstraction { bound_var, body } => Abstraction {
+    //             bound_var: bound_var.clone(),
+    //             body: body.shift(k + 1, n),
+    //         }
+    //         .arc(),
+    //         Application { function, argument } => Application {
+    //             function: function.shift(k, n),
+    //             argument: argument.shift(k, n),
+    //         }
+    //         .arc(),
+    //         Record(items) => Record(
+    //             items
+    //                 .iter()
+    //                 .map(|(name, val)| (name.clone(), val.shift(k, n)))
+    //                 .collect(),
+    //         )
+    //         .arc(),
+    //         Let {
+    //             clauses,
+    //             substituted_expr,
+    //         } => {
+    //             let variable_count: usize =
+    //                 clauses.iter().map(|(pat, _)| pat.variable_count()).sum();
+    //             let clauses = clauses
+    //                 .iter()
+    //                 .map(|(pat, val)| (pat.clone(), val.shift(k, n)))
+    //                 .collect();
+    //
+    //             Let {
+    //                 clauses,
+    //                 substituted_expr: substituted_expr.shift(k + variable_count, n),
+    //             }
+    //             .arc()
+    //         }
+    //         Variant { .. } => todo!(),
+    //         Nil => todo!(),
+    //         Cons { .. } => todo!(),
+    //     }
+    // }
+    //
+    // fn substitute(&self, index: usize, value: &Arc<UnnamedExpr>) -> Arc<UnnamedExpr> {
+    //     use UnnamedExpr::*;
+    //     match self {
+    //         ConstTrue => ConstTrue.arc(),
+    //         ConstFalse => ConstFalse.arc(),
+    //         ConstZero => ConstZero.arc(),
+    //         If {
+    //             cond,
+    //             iftrue,
+    //             iffalse,
+    //         } => If {
+    //             cond: cond.substitute(index, value),
+    //             iftrue: iftrue.substitute(index, value),
+    //             iffalse: iffalse.substitute(index, value),
+    //         }
+    //         .arc(),
+    //         Succ(t) => Succ(t.substitute(index, value)).arc(),
+    //         Pred(t) => Pred(t.substitute(index, value)).arc(),
+    //         IsZero(t) => IsZero(t.substitute(index, value)).arc(),
+    //         UnboundVar(v) => UnboundVar(v.clone()).arc(),
+    //         BoundVar {
+    //             index: bound_index,
+    //             old_name,
+    //         } => {
+    //             if *bound_index == index {
+    //                 value.clone()
+    //             } else {
+    //                 BoundVar {
+    //                     index: *bound_index,
+    //                     old_name: old_name.clone(),
+    //                 }
+    //                 .arc()
+    //             }
+    //         }
+    //         Abstraction { bound_var, body } => Abstraction {
+    //             bound_var: bound_var.clone(),
+    //             body: body.substitute(index + 1, &value.shift(0, 1)),
+    //         }
+    //         .arc(),
+    //         Application { function, argument } => Application {
+    //             function: function.substitute(index, value),
+    //             argument: argument.substitute(index, value),
+    //         }
+    //         .arc(),
+    //         Record(items) => Record(
+    //             items
+    //                 .iter()
+    //                 .map(|(name, val)| (name.clone(), val.substitute(index, value)))
+    //                 .collect(),
+    //         )
+    //         .arc(),
+    //         Let {
+    //             clauses,
+    //             substituted_expr,
+    //         } => {
+    //             let var_count: usize = clauses.iter().map(|(pat, _)| pat.variable_count()).sum();
+    //             Let {
+    //                 clauses: clauses
+    //                     .iter()
+    //                     .map(|(pat, val)| (pat.clone(), val.substitute(index, value)))
+    //                     .collect(),
+    //                 substituted_expr: substituted_expr
+    //                     .substitute(index + 1, &value.shift(0, var_count)),
+    //             }
+    //             .arc()
+    //         }
+    //         Variant { .. } => todo!(),
+    //         Nil => todo!(),
+    //         Cons { .. } => todo!(),
+    //     }
+    // }
+    //
+    // fn substitute_multi(
+    //     self: &Arc<Self>,
+    //     introduced_vars: &[Arc<UnnamedExpr>],
+    // ) -> Arc<UnnamedExpr> {
+    //     introduced_vars
+    //         .iter()
+    //         .rev()
+    //         .enumerate()
+    //         .fold(self.clone(), |val, (index, repl)| {
+    //             val.substitute(index, repl)
+    //         })
+    // }
+
+    /// Closes the term down to variable #k (k-th variable is the last one touched) using the provided context
+    ///
+    /// # Arguments
+    ///
+    /// * `context`: context to use for resolving the variables
+    /// * `k`: how many variables to consider local (those are not resolved and not saved in the closure)
+    fn close(self: &Arc<Self>, context: &EvaluationContext, k: usize) -> Arc<Self> {
         use UnnamedExpr::*;
-        match self {
-            ConstTrue => ConstTrue.arc(),
-            ConstFalse => ConstFalse.arc(),
+        match self.deref() {
+            ConstTrue => self.clone(),
+            ConstFalse => self.clone(),
             If {
                 cond,
                 iftrue,
                 iffalse,
             } => If {
-                cond: cond.shift(k),
-                iftrue: iftrue.shift(k),
-                iffalse: iffalse.shift(k),
+                cond: cond.close(context, k),
+                iftrue: iftrue.close(context, k),
+                iffalse: iffalse.close(context, k),
             }
             .arc(),
-            ConstZero => ConstZero.arc(),
-            Succ(t) => Succ(t.shift(k)).arc(),
-            Pred(t) => Pred(t.shift(k)).arc(),
-            IsZero(t) => IsZero(t.shift(k)).arc(),
-            UnboundVar(v) => UnboundVar(v.clone()).arc(),
-            BoundVar {
-                index: bound_index,
-                old_name,
-            } => BoundVar {
-                index: if *bound_index < k {
-                    *bound_index
-                } else {
-                    *bound_index + 1
-                },
-                old_name: old_name.clone(),
-            }
-            .arc(),
-
-            Abstraction { bound_var, body } => Abstraction {
-                bound_var: bound_var.clone(),
-                body: body.shift(k + 1),
-            }
-            .arc(),
-            Application { function, argument } => Application {
-                function: function.shift(k),
-                argument: argument.shift(k),
-            }
-            .arc(),
-        }
-    }
-
-    fn substitute(&self, index: u32, value: Arc<UnnamedExpr>) -> Arc<UnnamedExpr> {
-        use UnnamedExpr::*;
-        match self {
-            ConstTrue => ConstTrue.arc(),
-            ConstFalse => ConstFalse.arc(),
-            ConstZero => ConstZero.arc(),
-            If {
-                cond,
-                iftrue,
-                iffalse,
-            } => If {
-                cond: cond.substitute(index, value.clone()),
-                iftrue: iftrue.substitute(index, value.clone()),
-                iffalse: iffalse.substitute(index, value),
-            }
-            .arc(),
-            Succ(t) => Succ(t.substitute(index, value)).arc(),
-            Pred(t) => Pred(t.substitute(index, value)).arc(),
-            IsZero(t) => IsZero(t.substitute(index, value)).arc(),
-            UnboundVar(v) => UnboundVar(v.clone()).arc(),
-            BoundVar {
-                index: bound_index,
-                old_name,
-            } => {
-                if *bound_index == index {
-                    value
+            ConstZero => self.clone(),
+            Succ(t) => Succ(t.close(context, k)).arc(),
+            Pred(t) => Pred(t.close(context, k)).arc(),
+            IsZero(t) => IsZero(t.close(context, k)).arc(),
+            UnboundVar(_) => self.clone(),
+            BoundVar { index, old_name } => {
+                let index = *index;
+                if index >= k {
+                    context.get(index - k)
                 } else {
                     BoundVar {
-                        index: *bound_index,
+                        index,
                         old_name: old_name.clone(),
                     }
                     .arc()
                 }
             }
-            Abstraction { bound_var, body } => Abstraction {
+            Abstraction { body, bound_var } => Abstraction {
+                body: body.close(context, k + 1),
                 bound_var: bound_var.clone(),
-                body: body.substitute(index + 1, value.shift(0)),
             }
             .arc(),
             Application { function, argument } => Application {
-                function: function.substitute(index, value.clone()),
-                argument: argument.substitute(index, value),
+                function: function.close(context, k),
+                argument: argument.close(context, k),
             }
             .arc(),
+            Record(items) => Record(
+                items
+                    .iter()
+                    .map(|(name, val)| (name.clone(), val.close(context, k)))
+                    .collect(),
+            )
+            .arc(),
+            Let {
+                clauses,
+                substituted_expr,
+            } => {
+                let variable_count: usize =
+                    clauses.iter().map(|(pat, _)| pat.variable_count()).sum();
+                let clauses = clauses
+                    .iter()
+                    .map(|(pattern, value)| (pattern.clone(), value.close(context, k)))
+                    .collect();
+                let substituted_expr = substituted_expr.close(context, k + variable_count);
+                Let {
+                    clauses,
+                    substituted_expr,
+                }
+                .arc()
+            }
+            Variant { .. } => todo!(),
+            Nil => todo!(),
+            Cons { .. } => todo!(),
         }
     }
 
-    fn evaluate_impl(
-        &self,
-        context: &mut Vec<Arc<UnnamedExpr>>,
-    ) -> Result<Arc<Self>, RuntimeError> {
+    fn isval(&self) -> bool {
+        match self {
+            UnnamedExpr::ConstTrue => true,
+            UnnamedExpr::ConstFalse => true,
+            UnnamedExpr::If { .. } => false,
+            UnnamedExpr::ConstZero => true,
+            UnnamedExpr::Succ(t) => t.isval(),
+            UnnamedExpr::Pred(_) => false,
+            UnnamedExpr::IsZero(_) => false,
+            UnnamedExpr::UnboundVar(_) => false,
+            UnnamedExpr::BoundVar { .. } => false,
+            UnnamedExpr::Abstraction { .. } => false,
+            UnnamedExpr::Application { .. } => false,
+            UnnamedExpr::Record(items) => items.iter().all(|(_, val)| val.isval()),
+            UnnamedExpr::Let { .. } => false,
+            UnnamedExpr::Variant { .. } => todo!(),
+            UnnamedExpr::Nil => true,
+            UnnamedExpr::Cons { .. } => todo!(),
+        }
+    }
+
+    fn evaluate_impl(&self, context: &mut EvaluationContext) -> Result<Arc<Self>, RuntimeError> {
         use UnnamedExpr::*;
 
         Ok(match self {
+            ConstTrue => ConstTrue.arc(),
+            ConstFalse => ConstFalse.arc(),
+            ConstZero => ConstZero.arc(),
             If {
                 cond,
                 iftrue,
@@ -368,14 +900,14 @@ impl UnnamedExpr {
             } => {
                 let cond = cond.evaluate_impl(context)?;
                 return match cond.deref() {
-                    ConstTrue => Ok(iftrue.evaluate_impl(context)?),
-                    ConstFalse => Ok(iffalse.evaluate_impl(context)?),
-                    UnboundVar(_) => Ok(If {
+                    t if !t.isval() => Ok(If {
                         cond,
                         iftrue: iftrue.evaluate_impl(context)?,
                         iffalse: iffalse.evaluate_impl(context)?,
                     }
                     .arc()),
+                    ConstTrue => Ok(iftrue.evaluate_impl(context)?),
+                    ConstFalse => Ok(iffalse.evaluate_impl(context)?),
                     _ => Err(RuntimeError::IfTypeError(cond)),
                 };
             }
@@ -383,6 +915,7 @@ impl UnnamedExpr {
             Pred(t) => {
                 let t = t.evaluate_impl(context)?;
                 return match t.deref() {
+                    t if !t.isval() => Ok(Pred(t.clone().arc()).arc()),
                     ConstZero => Ok(ConstZero.arc()),
                     Succ(t) => Ok(t.clone()),
                     _ => Err(RuntimeError::PredTypeError(t)),
@@ -391,32 +924,104 @@ impl UnnamedExpr {
             IsZero(t) => {
                 let t = t.evaluate_impl(context)?;
                 return match t.deref() {
+                    t if !t.isval() => Ok(IsZero(t.clone().arc()).arc()),
                     ConstZero => Ok(ConstTrue.arc()),
                     Succ(_) => Ok(ConstFalse.arc()),
                     _ => Err(RuntimeError::IsZeroTypeError(t)),
                 };
             }
-            BoundVar { .. } => unreachable!(), // should already be substituted
-            // Abstraction { bound_var, body } => todo!(),
+            BoundVar { index, .. } => context.get(*index),
+            Abstraction { bound_var, body } =>
+            // don't touch the abstraction, we use call-by-value
+            {
+                Abstraction {
+                    bound_var: bound_var.clone(),
+                    body: body.close(context, 1),
+                }
+                .arc()
+
+                // context.save_frame(|context| {
+                //     context.push(None);
+                //     body.evaluate_impl(context).map(|body| {
+                //         Abstraction {
+                //             bound_var: bound_var.clone(),
+                //             body,
+                //         }
+                //         .arc()
+                //     })
+                // })?
+            }
             Application { function, argument } => {
                 let function = function.evaluate_impl(context)?;
                 return match function.deref() {
-                    Abstraction { body, .. } => Ok(body
-                        .substitute(0, argument.clone())
-                        .evaluate_impl(context)?),
+                    Abstraction { body, .. } => {
+                        let argument = argument.evaluate_impl(context)?;
+                        context.save_frame(|context| {
+                            context.push(argument);
+                            body.evaluate_impl(context)
+                        })
+                    }
                     UnboundVar(name) => Ok(UnboundVar(name.clone()).arc()), // it's ok to call an external value
                     _ => {
                         todo!()
                     }
                 };
             }
-            _ => self.clone().arc(),
+            Let {
+                clauses,
+                substituted_expr,
+            } => {
+                let clauses = clauses
+                    .iter()
+                    .map(|(pattern, expr)| -> Result<_, _> {
+                        Ok((pattern.clone(), expr.evaluate_impl(context)?))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                if clauses
+                    .iter()
+                    .all(|(pattern, expr)| pattern.expandable(expr))
+                {
+                    let vars = clauses
+                        .iter()
+                        .map(|(pattern, expr)| -> Result<_, _> {
+                            let destructed_expr = expr.evaluate_impl(context)?;
+
+                            pattern.collect_var_vals(&destructed_expr)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>();
+                    context.save_frame(|context| {
+                        context.extend(vars.into_iter());
+                        substituted_expr.evaluate_impl(context)
+                    })?
+                } else {
+                    Let {
+                        clauses,
+                        substituted_expr: substituted_expr.clone(),
+                    }
+                    .arc()
+                }
+            }
+            UnboundVar(_) => panic!("Evaluate UnboundVar? No, thank you"),
+            Record(items) => Record(
+                items
+                    .iter()
+                    .map(|(name, val)| val.evaluate_impl(context).map(|val| (name.clone(), val)))
+                    .collect::<Result<_, _>>()?,
+            )
+            .arc(),
+            Variant { .. } => todo!(),
+            Nil => todo!(),
+            Cons { .. } => todo!(),
         })
     }
 
     pub fn evaluate(&self) -> Result<Arc<Self>, RuntimeError> {
         // TODO: context is actually not needed
-        let mut context = Vec::new();
+        let mut context = EvaluationContext::new();
         UnnamedExpr::evaluate_impl(self, &mut context)
     }
 
@@ -463,6 +1068,25 @@ impl UnnamedExpr {
                 UnnamedExpr::equivalent(argument1, argument2)
                     && UnnamedExpr::equivalent(function1, function2)
             }
+            // Record(BTreeMap<Arc<str>, Arc<UnnamedExpr>>),
+            //     Let {
+            //         clauses: Vec<(Arc<UnnamedPattern>, Arc<UnnamedExpr>)>,
+            //         substituted_expr: Arc<UnnamedExpr>,
+            //     },
+            //     Variant {
+            //         name: Arc<str>,
+            //         body: Arc<UnnamedExpr>,
+            //     },
+            //     Nil,
+            //     Cons {
+            //         left: Arc<UnnamedExpr>,
+            //         right: Arc<UnnamedExpr>,
+            //     },
+            (Record(items1), Record(items2)) => items1 == items2,
+            (Let { .. }, Let { .. }) => todo!(),
+            (Variant { .. }, Variant { .. }) => todo!(),
+            (Nil, Nil) => todo!(),
+            (Cons { .. }, Cons { .. }) => todo!(),
             _ => false,
         }
     }
