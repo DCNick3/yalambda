@@ -67,8 +67,8 @@ pub Expr: Arc<Expr> = {
         clauses,
         substituted_expr,
     }),
-    "Nil" "[" <t:Type> "]" => Expr::Nil { ty: t }.arc(),
-    "Cons" <left:Expr> <right:Expr> => Expr::Cons { left, right }.arc(),
+    "nil" "[" <t:Type> "]" => Expr::Nil { ty: t }.arc(),
+    "cons" <left:Expr> <right:Expr> => Expr::Cons { left, right }.arc(),
     "<" <nm:Ident> <val:Expr> ">" "as" <ty:Type> => Arc::new(Expr::Variant {
         name: nm,
         body: val,

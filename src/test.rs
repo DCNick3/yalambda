@@ -163,3 +163,7 @@ in
 ",
     r"{_1:2, _2:1}"
 );
+
+test_eval!(list_creat, r"cons pred 4 nil[Nat]", r"cons 3 nil[Nat]");
+
+test_eval!(let_eq, r"\x:Nat. let x=x in x", r"\x:Nat. let x=x in x");

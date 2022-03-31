@@ -70,10 +70,6 @@ impl Type {
     }
 }
 
-// macro_rules! expect_matches {
-//     ()
-// }
-
 #[derive(Debug, Clone)]
 pub enum Expr {
     ConstTrue,
@@ -542,6 +538,17 @@ impl UnnamedPattern {
     }
 }
 
+impl PartialEq for UnnamedPattern {
+    fn eq(&self, other: &Self) -> bool {
+        use UnnamedPattern::*;
+        match (self, other) {
+            (Var(_), Var(_)) => true,
+            (Record(items1), Record(items2)) => items1 == items2,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum UnnamedExpr {
     ConstTrue,
@@ -585,207 +592,12 @@ pub enum UnnamedExpr {
     },
 }
 
-// struct EvaluationContextNode {
-//     pub value: Arc<UnnamedExpr>,
-//     pub next: Option<Arc<EvaluationContextNode>>,
-// }
-
-// struct EvaluationContext(Option<Arc<EvaluationContextNode>>);
-//
-// impl EvaluationContext {
-//     pub fn new() -> Self {
-//         EvaluationContext(None)
-//     }
-//
-//     pub fn cons(self, value: Arc<UnnamedExpr>) -> Self {
-//         EvaluationContext(Some(Arc::new(EvaluationContextNode {
-//             value,
-//             next: self.0,
-//         })))
-//     }
-//
-//     fn get_impl(node: &Option<Arc<EvaluationContextNode>>, index: usize) -> Arc<UnnamedExpr> {
-//         match node {
-//             None => panic!("EvaluationContext index out of bounds"),
-//             Some(node) => {
-//                 if index == 0 {
-//                     node.value.clone()
-//                 } else {
-//                     EvaluationContext::get_impl(&node.next, index - 1)
-//                 }
-//             }
-//         }
-//     }
-//
-//     pub fn get(&self, index: usize) -> Arc<UnnamedExpr> {
-//         EvaluationContext::get_impl(&self.0, index)
-//     }
-// }
-
 type EvaluationContext = Context<Arc<UnnamedExpr>>;
 
 impl UnnamedExpr {
     pub fn arc(self) -> Arc<Self> {
         Arc::new(self)
     }
-
-    // fn shift(&self, k: usize, n: usize) -> Arc<UnnamedExpr> {
-    //     use UnnamedExpr::*;
-    //     match self {
-    //         ConstTrue => ConstTrue.arc(),
-    //         ConstFalse => ConstFalse.arc(),
-    //         If {
-    //             cond,
-    //             iftrue,
-    //             iffalse,
-    //         } => If {
-    //             cond: cond.shift(k, n),
-    //             iftrue: iftrue.shift(k, n),
-    //             iffalse: iffalse.shift(k, n),
-    //         }
-    //         .arc(),
-    //         ConstZero => ConstZero.arc(),
-    //         Succ(t) => Succ(t.shift(k, n)).arc(),
-    //         Pred(t) => Pred(t.shift(k, n)).arc(),
-    //         IsZero(t) => IsZero(t.shift(k, n)).arc(),
-    //         UnboundVar(v) => UnboundVar(v.clone()).arc(),
-    //         BoundVar {
-    //             index: bound_index,
-    //             old_name,
-    //         } => BoundVar {
-    //             index: if *bound_index < k {
-    //                 *bound_index
-    //             } else {
-    //                 *bound_index + n
-    //             },
-    //             old_name: old_name.clone(),
-    //         }
-    //         .arc(),
-    //
-    //         Abstraction { bound_var, body } => Abstraction {
-    //             bound_var: bound_var.clone(),
-    //             body: body.shift(k + 1, n),
-    //         }
-    //         .arc(),
-    //         Application { function, argument } => Application {
-    //             function: function.shift(k, n),
-    //             argument: argument.shift(k, n),
-    //         }
-    //         .arc(),
-    //         Record(items) => Record(
-    //             items
-    //                 .iter()
-    //                 .map(|(name, val)| (name.clone(), val.shift(k, n)))
-    //                 .collect(),
-    //         )
-    //         .arc(),
-    //         Let {
-    //             clauses,
-    //             substituted_expr,
-    //         } => {
-    //             let variable_count: usize =
-    //                 clauses.iter().map(|(pat, _)| pat.variable_count()).sum();
-    //             let clauses = clauses
-    //                 .iter()
-    //                 .map(|(pat, val)| (pat.clone(), val.shift(k, n)))
-    //                 .collect();
-    //
-    //             Let {
-    //                 clauses,
-    //                 substituted_expr: substituted_expr.shift(k + variable_count, n),
-    //             }
-    //             .arc()
-    //         }
-    //         Variant { .. } => todo!(),
-    //         Nil => todo!(),
-    //         Cons { .. } => todo!(),
-    //     }
-    // }
-    //
-    // fn substitute(&self, index: usize, value: &Arc<UnnamedExpr>) -> Arc<UnnamedExpr> {
-    //     use UnnamedExpr::*;
-    //     match self {
-    //         ConstTrue => ConstTrue.arc(),
-    //         ConstFalse => ConstFalse.arc(),
-    //         ConstZero => ConstZero.arc(),
-    //         If {
-    //             cond,
-    //             iftrue,
-    //             iffalse,
-    //         } => If {
-    //             cond: cond.substitute(index, value),
-    //             iftrue: iftrue.substitute(index, value),
-    //             iffalse: iffalse.substitute(index, value),
-    //         }
-    //         .arc(),
-    //         Succ(t) => Succ(t.substitute(index, value)).arc(),
-    //         Pred(t) => Pred(t.substitute(index, value)).arc(),
-    //         IsZero(t) => IsZero(t.substitute(index, value)).arc(),
-    //         UnboundVar(v) => UnboundVar(v.clone()).arc(),
-    //         BoundVar {
-    //             index: bound_index,
-    //             old_name,
-    //         } => {
-    //             if *bound_index == index {
-    //                 value.clone()
-    //             } else {
-    //                 BoundVar {
-    //                     index: *bound_index,
-    //                     old_name: old_name.clone(),
-    //                 }
-    //                 .arc()
-    //             }
-    //         }
-    //         Abstraction { bound_var, body } => Abstraction {
-    //             bound_var: bound_var.clone(),
-    //             body: body.substitute(index + 1, &value.shift(0, 1)),
-    //         }
-    //         .arc(),
-    //         Application { function, argument } => Application {
-    //             function: function.substitute(index, value),
-    //             argument: argument.substitute(index, value),
-    //         }
-    //         .arc(),
-    //         Record(items) => Record(
-    //             items
-    //                 .iter()
-    //                 .map(|(name, val)| (name.clone(), val.substitute(index, value)))
-    //                 .collect(),
-    //         )
-    //         .arc(),
-    //         Let {
-    //             clauses,
-    //             substituted_expr,
-    //         } => {
-    //             let var_count: usize = clauses.iter().map(|(pat, _)| pat.variable_count()).sum();
-    //             Let {
-    //                 clauses: clauses
-    //                     .iter()
-    //                     .map(|(pat, val)| (pat.clone(), val.substitute(index, value)))
-    //                     .collect(),
-    //                 substituted_expr: substituted_expr
-    //                     .substitute(index + 1, &value.shift(0, var_count)),
-    //             }
-    //             .arc()
-    //         }
-    //         Variant { .. } => todo!(),
-    //         Nil => todo!(),
-    //         Cons { .. } => todo!(),
-    //     }
-    // }
-    //
-    // fn substitute_multi(
-    //     self: &Arc<Self>,
-    //     introduced_vars: &[Arc<UnnamedExpr>],
-    // ) -> Arc<UnnamedExpr> {
-    //     introduced_vars
-    //         .iter()
-    //         .rev()
-    //         .enumerate()
-    //         .fold(self.clone(), |val, (index, repl)| {
-    //             val.substitute(index, repl)
-    //         })
-    // }
 
     /// Closes the term down to variable #k (k-th variable is the last one touched) using the provided context
     ///
@@ -1014,8 +826,12 @@ impl UnnamedExpr {
             )
             .arc(),
             Variant { .. } => todo!(),
-            Nil => todo!(),
-            Cons { .. } => todo!(),
+            Nil => Nil.arc(),
+            Cons { left, right } => {
+                let left = left.evaluate_impl(context)?;
+                let right = right.evaluate_impl(context)?;
+                Cons { left, right }.arc()
+            }
         })
     }
 
@@ -1083,10 +899,28 @@ impl UnnamedExpr {
             //         right: Arc<UnnamedExpr>,
             //     },
             (Record(items1), Record(items2)) => items1 == items2,
-            (Let { .. }, Let { .. }) => todo!(),
+            (
+                Let {
+                    clauses: clauses1,
+                    substituted_expr: substituted_expr1,
+                },
+                Let {
+                    clauses: clauses2,
+                    substituted_expr: substituted_expr2,
+                },
+            ) => clauses1 == clauses2 && substituted_expr1 == substituted_expr2,
             (Variant { .. }, Variant { .. }) => todo!(),
-            (Nil, Nil) => todo!(),
-            (Cons { .. }, Cons { .. }) => todo!(),
+            (Nil, Nil) => true,
+            (
+                Cons {
+                    left: left1,
+                    right: right1,
+                },
+                Cons {
+                    left: left2,
+                    right: right2,
+                },
+            ) => left1 == left2 && right1 == right2,
             _ => false,
         }
     }
